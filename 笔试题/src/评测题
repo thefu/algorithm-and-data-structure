@@ -1,0 +1,37 @@
+/**
+     * 业务功能：成功受理用户的充值请求之后，异步捞取待充值数据（遍历100张数据表），执行充值业务处理
+     * <p>
+     * 定时任务每分钟执行一次，单表查询需要100ms，
+     */
+    @Transactional(propagation=Propagation.REQUIRED) 	// 自动默认开启事务
+    public void recoverDeposit() {
+        // 单库捞取最大条数20
+        int maxTableRecord = 20;
+        List<String> list = new ArrayList<String>();
+        // 轮循100个库，每个库都查询20条，最多2000条
+        for (int i = 0; i < TddlUtil.TABLE_NUMBER; i++) {
+            // 创建虚拟账号，按分库位来创建账号
+            String dummyIwAccountNo = AssistDbUtil.createIwAccount(i);
+            // select t.deposit_id from deposit_instruction t where  t.status= #status#  and rownum <= #maxSize#
+            list.addAll(depositInstructionTddlDAO.loadRunnableIds(dummyIwAccountNo, "R", maxTableRecord));
+        }
+
+        for (String depositId : list) {
+            try {
+                // depositFacade是远程RPC服务调用，单次耗时1.5秒
+                // 执行充值中， 创建了各种对象，返回是否成功
+                boolean success = depositFacade.deposit(depositId);
+                if (success) {
+                    // update deposit_instruction t set t.status='S',t.gmt_modified=sysdate where t.deposit_id=#deposit_id#
+                    depositInstructionDAO.updateSuccess(depositId);
+                }
+            } catch (Exception e) {
+                log.error("业务充值失败",e);
+            }
+        }
+    }
+
+        //recoverDeposit这个方法可以有一个传参：maxTableRecord（单库捞取最大条数），这样可以提高代码的复用性
+        //执行充值返回结果若是false，也应该有相应的返回
+        //对list应该进行一次判空，以免使用增强for循环导致空指针异常
+        //在创建虚拟账号，按分库位来创建账号，AssistDbUtil.createIwAccount()，里面传入的参数应该是(i+1)这样更方便理解
